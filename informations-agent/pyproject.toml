@@ -1,0 +1,39 @@
+[project]
+name = "informations-agent"
+version = "0.1.0"
+description = "A2A agent that answers questions about a bank client's accounts, transactions and cards (read-only)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "a2a-sdk[http-server]>=1.2.2",
+    "langchain>=1.4.3",
+    "langchain-openai>=1.6.7",
+    "pydantic-settings>=2.15.0",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+informations-agent = "informations_agent.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.10",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["E501"]

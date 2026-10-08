@@ -1,0 +1,26 @@
+sequenceDiagram
+    autonumber
+    actor C as Client
+    participant B as Bank Agent (leader)
+    participant I as Informations Agent
+    participant A as Actions Agent
+
+    C->>B: Question needing a sub-agent
+    Note over B: Model calls ask_*_agent<br/>src/agent/tools/remoteAgents.ts:32 / :57
+    Note over I,A: Shown with the Informations Agent, same cases for the Actions Agent
+
+    alt Agent Card unreachable (agent down)
+        B--xI: GET /.well-known/agent-card.json
+        Note over B: Client not cached, next call retries discovery<br/>src/a2a/remoteAgent.ts:121
+    else Network error or timeout (100 s)
+        B--xI: SendMessage
+    else Task rejected (e.g. missing client_id)
+        B->>I: SendMessage
+        I-->>B: Task rejected + reason
+    else Task failed (sub-agent LLM error or timeout)
+        B->>I: SendMessage
+        I-->>B: Task failed + generic message<br/>informations_agent/executor.py:105
+    end
+
+    Note over B: Error returned to the model as a tool error,<br/>the turn does not fail<br/>src/agent/tools/remoteAgents.ts:95
+    B-->>C: Apology + alternatives (app, phone line)

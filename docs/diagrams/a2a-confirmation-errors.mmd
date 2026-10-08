@@ -1,0 +1,23 @@
+sequenceDiagram
+    autonumber
+    actor C as Client
+    participant B as Bank Agent (leader)
+    participant I as Informations Agent
+    participant A as Actions Agent
+
+    Note over C,A: An operation is paused (input-required) and the client clicks a button
+    C->>B: confirmation { decision }
+
+    alt No pending confirmation (superseded by a new message)
+        Note over B: src/agent/bankAgent.ts:206
+        B-->>C: 409 "No operation is waiting for confirmation"
+    else Network error while sending the decision
+        B--xA: SendMessage (taskId, decision)
+        Note over B: pendingConfirmation kept, retry is safe<br/>src/agent/bankAgent.ts:218
+        B-->>C: 503 "Try again later"
+    else Actions Agent restarted (task lost)
+        B->>A: SendMessage (taskId, decision)
+        A-->>B: JSON-RPC error TaskNotFound
+        Note over B: pendingConfirmation dropped<br/>src/agent/bankAgent.ts:232
+        B-->>C: "Expired, nothing was changed"
+    end

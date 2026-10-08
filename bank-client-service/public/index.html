@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Atlas Bank Assistant</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --text: #1b1f24;
+      --muted: #69707a;
+      --border: #e1e4e8;
+      --accent: #1f5fbf;
+      --accent-text: #ffffff;
+      --assistant-bubble: #ffffff;
+      --error: #b42318;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111418;
+        --surface: #1a1e23;
+        --text: #e6e8eb;
+        --muted: #9aa1ab;
+        --border: #2c3138;
+        --accent: #4d8ff0;
+        --accent-text: #0b0d10;
+        --assistant-bubble: #22272e;
+        --error: #f97066;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 16px;
+    }
+    .msg {
+      max-width: min(720px, 85%);
+      padding: 10px 14px;
+      border-radius: 14px;
+      /* Answers are plain text: keep the model's line breaks without interpreting any markup. */
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .msg.user {
+      align-self: flex-end;
+      background: var(--accent);
+      color: var(--accent-text);
+      border-bottom-right-radius: 4px;
+    }
+    .msg.assistant {
+      align-self: flex-start;
+      background: var(--assistant-bubble);
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 4px;
+    }
+    .msg.pending { color: var(--muted); }
+    .msg.notice {
+      align-self: center;
+      max-width: 90%;
+      padding: 4px 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .msg.notice.error { color: var(--error); }
+
+    form {
+      display: flex;
+      gap: 8px;
+      padding: 12px 16px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+    }
+    textarea {
+      flex: 1;
+      resize: none;
+      max-height: 160px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+    }
+    textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+    button {
+      padding: 0 16px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      background: var(--accent);
+      color: var(--accent-text);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+    button.secondary {
+      padding: 6px 12px;
+      background: transparent;
+      color: var(--text);
+      border-color: var(--border);
+      font-weight: 500;
+    }
+
+    .confirmation {
+      align-self: flex-start;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-width: min(720px, 85%);
+      padding: 12px 14px;
+      border: 1px solid var(--accent);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+    .confirmation .summary { font-weight: 600; white-space: pre-wrap; }
+    .confirmation input {
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+    }
+    .confirmation .actions { display: flex; gap: 8px; }
+    .confirmation .actions button { padding: 6px 14px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Atlas Bank · Client service</h1>
+    <button type="button" class="secondary" id="reset">New conversation</button>
+  </header>
+
+  <main id="messages" aria-live="polite"></main>
+
+  <form id="composer">
+    <textarea id="input" rows="1" placeholder="Ask a question, check your accounts, block a card…" maxlength="2000" required></textarea>
+    <button type="submit" id="send">Send</button>
+  </form>
+
+  <script>
+    const messagesEl = document.getElementById("messages");
+    const form = document.getElementById("composer");
+    const input = document.getElementById("input");
+    const sendBtn = document.getElementById("send");
+    const resetBtn = document.getElementById("reset");
+
+    const WELCOME = "Hello! I can answer questions about Atlas Bank and about your accounts, and I can block a card or move money between your accounts.";
+    let conversationId = null;
+    let confirmationEl = null;
+
+    // textContent only: answers are model-generated and must never be interpreted as HTML.
+    function addMessage(text, kind) {
+      const el = document.createElement("div");
+      el.className = `msg ${kind}`;
+      el.textContent = text;
+      messagesEl.append(el);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      return el;
+    }
+
+    function setBusy(busy) {
+      input.disabled = busy;
+      sendBtn.disabled = busy;
+      resetBtn.disabled = busy;
+      confirmationEl?.querySelectorAll("button, input").forEach((el) => { el.disabled = busy; });
+      if (!busy) input.focus();
+    }
+
+    function clearConfirmation() {
+      confirmationEl?.remove();
+      confirmationEl = null;
+    }
+
+    // An operation (card block, transfer) waits for the client's explicit click. The decision is sent
+    // as a structured field, never as chat text: the server forwards it to the actions agent over A2A.
+    function showConfirmation(summary) {
+      clearConfirmation();
+      confirmationEl = document.createElement("div");
+      confirmationEl.className = "confirmation";
+
+      const summaryEl = document.createElement("div");
+      summaryEl.className = "summary";
+      summaryEl.textContent = summary;
+
+      const comment = document.createElement("input");
+      comment.placeholder = "Comment (optional)";
+      comment.maxLength = 500;
+
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      for (const [decision, label, cls] of [["approve", "Approve", ""], ["reject", "Reject", "secondary"]]) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = label;
+        btn.className = cls;
+        btn.addEventListener("click", () => {
+          const text = comment.value.trim();
+          clearConfirmation();
+          addMessage(text ? `${label}: ${text}` : label, "user");
+          exchange({ conversationId, confirmation: text ? { decision, comment: text } : { decision } });
+        });
+        actions.append(btn);
+      }
+
+      confirmationEl.append(summaryEl, comment, actions);
+      messagesEl.append(confirmationEl);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function autoGrow() {
+      input.style.height = "auto";
+      input.style.height = `${input.scrollHeight}px`;
+    }
+
+    function reset() {
+      conversationId = null;
+      confirmationEl = null;
+      messagesEl.replaceChildren();
+      addMessage(WELCOME, "assistant");
+      input.focus();
+    }
+
+    async function post(payload) {
+      const res = await fetch("/api/v1/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json().catch(() => null);
+      return { status: res.status, body };
+    }
+
+    // Sends a message or a confirmation decision, and renders the reply.
+    async function exchange(payload) {
+      setBusy(true);
+      const pending = addMessage("…", "assistant pending");
+
+      try {
+        let { status, body } = await post(payload);
+
+        if (status === 404 && conversationId && payload.message) {
+          // Conversation expired on the server: start a new one and resend the question.
+          conversationId = null;
+          addMessage("Your previous conversation expired. A new one has started.", "notice");
+          ({ status, body } = await post({ message: payload.message }));
+        }
+
+        if (status === 200 && body) {
+          conversationId = body.conversationId;
+          pending.className = "msg assistant";
+          pending.textContent = body.answer;
+          if (body.status === "confirmation_required") showConfirmation(body.confirmation.summary);
+          return;
+        }
+
+        pending.remove();
+        const reason = status === 409
+          ? body?.error?.message ?? "A message is already being processed. Wait a moment or start a new conversation."
+          : body?.error?.message ?? "Something went wrong. Please try again.";
+        addMessage(reason, "notice error");
+        if (payload.message) input.value = payload.message;
+      } catch {
+        pending.remove();
+        addMessage("Network error. Please check your connection and try again.", "notice error");
+        if (payload.message) input.value = payload.message;
+      } finally {
+        autoGrow();
+        setBusy(false);
+      }
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+
+      // Typing instead of clicking drops the pending operation (the server does the same).
+      clearConfirmation();
+      addMessage(message, "user");
+      input.value = "";
+      autoGrow();
+      exchange(conversationId ? { message, conversationId } : { message });
+    });
+
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    input.addEventListener("input", autoGrow);
+    resetBtn.addEventListener("click", reset);
+
+    reset();
+  </script>
+</body>
+</html>
