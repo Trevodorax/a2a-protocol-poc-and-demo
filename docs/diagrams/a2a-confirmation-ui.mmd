@@ -1,0 +1,34 @@
+sequenceDiagram
+    autonumber
+    actor C as Client
+    participant P as Web app (host)
+    participant V as Confirmation view (sandboxed iframe)
+    participant B as Bank Agent (leader)
+    participant A as Actions Agent
+
+    Note over B,A: Agent Card declares the UI extension as required (actions_agent/agent_card.py:55)<br/>Bank Agent declares support for it (src/server.ts:19)
+
+    C->>P: "Block my card 4821"
+    P->>B: POST /api/v1/chat { message }
+    Note over B: Model calls ask_actions_agent<br/>src/agent/tools/remoteAgents.ts:61
+    B->>A: SendMessage (text, client_id, contextId)<br/>header A2A-Extensions: .../mcp-app-ui/v1 (src/a2a/remoteAgent.ts:144)
+    A-->>B: Task input-required: text summary<br/>+ data confirmation_request<br/>+ file part text/html#59;profile=mcp-app, uri ui://actions-agent/confirmation<br/>actions_agent/executor.py:234
+    Note over B: View extracted, CSP injected (src/a2a/uiResources.ts:64)<br/>Hidden from the model (src/agent/tools/remoteAgents.ts:84)
+    B-->>P: confirmation_required { summary, ui { resource, structuredContent } }
+
+    P->>V: iframe sandbox="allow-scripts" srcdoc=view<br/>public/index.html:216
+    V->>P: ui/initialize
+    P-->>V: { protocolVersion, hostInfo, hostContext { theme } }
+    V->>P: ui/notifications/initialized
+    P->>V: ui/notifications/tool-input + tool-result { structuredContent }
+    V->>P: ui/notifications/size-changed { height }
+    C->>V: Click Approve (+ optional comment)
+    V->>P: tools/call reply_to_task { decision, comment }
+    P-->>V: Result "Decision sent.", then the iframe is removed
+
+    Note over P,A: Consent is a structured decision from the click, never chat text or model output
+    P->>B: POST /api/v1/chat { confirmation { decision, comment } }
+    B->>A: SendMessage (same taskId, data { decision } + text comment)<br/>src/agent/bankAgent.ts:223
+    A-->>B: Task completed + answer artifact
+    B-->>P: "Votre carte est bloquée."
+    P-->>C: Answer shown in the chat

@@ -9,15 +9,15 @@ sequenceDiagram
     C->>B: confirmation { decision }
 
     alt No pending confirmation (superseded by a new message)
-        Note over B: src/agent/bankAgent.ts:206
+        Note over B: src/agent/bankAgent.ts:215
         B-->>C: 409 "No operation is waiting for confirmation"
     else Network error while sending the decision
         B--xA: SendMessage (taskId, decision)
-        Note over B: pendingConfirmation kept, retry is safe<br/>src/agent/bankAgent.ts:218
+        Note over B: pendingConfirmation kept, retry is safe<br/>src/agent/bankAgent.ts:230
         B-->>C: 503 "Try again later"
     else Actions Agent restarted (task lost)
         B->>A: SendMessage (taskId, decision)
         A-->>B: JSON-RPC error TaskNotFound
-        Note over B: pendingConfirmation dropped<br/>src/agent/bankAgent.ts:232
+        Note over B: pendingConfirmation dropped<br/>src/agent/bankAgent.ts:233
         B-->>C: "Expired, nothing was changed"
     end

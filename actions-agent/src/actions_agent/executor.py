@@ -24,6 +24,9 @@ A2A vocabulary used here
   one client: a context id reused with another client_id never sees the first client's state.
 - Artifact: the result of a task (here, one text part with the agent's answer). The status message
   explains the state (the confirmation request, or why the task failed or was rejected).
+- Extension: an addition to the protocol, advertised in the Agent Card and requested by the caller in
+  the `A2A-Extensions` header. This agent's UI extension is required: every confirmation request
+  carries the confirmation card as an MCP Apps HTML view (see ui.py).
 
 Confirmation flow (write actions only)
 --------------------------------------
@@ -39,6 +42,7 @@ checkpointer. A write can only happen after an explicit approval, whatever the m
       |          Blocking is permanent..."      |
       |   data: {"type": "confirmation_request",|
       |          "actions": [...]}              |
+      |   file: confirmation view (MCP App)     |
       | <-------------------------------------- |
       | SendMessage (same task_id)              |
       |   data: {"decision": "approve"}         |
@@ -87,6 +91,7 @@ from langgraph.types import Command
 
 from actions_agent.context import ClientContext
 from actions_agent.tools import describe_action
+from actions_agent.ui import confirmation_ui_part
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +230,8 @@ class ActionsAgentExecutor(AgentExecutor):
                         },
                     }
                 ),
+                # The HTML view that renders the data part above, MCP Apps style (see ui.py).
+                confirmation_ui_part(),
             ]
         )
 

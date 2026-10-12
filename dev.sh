@@ -41,6 +41,8 @@ echo "Installing dependencies..."
 (cd "$ROOT/bank-client-service" && { [[ -d node_modules ]] || npm install --silent; })
 
 trap 'trap - INT TERM EXIT; kill 0 2>/dev/null' INT TERM EXIT
+# Logs go through `prefix` (a pipe): keep the front agent's log colors when we print to a terminal.
+[[ -t 1 ]] && export FORCE_COLOR=1
 prefix() { sed -u "s/^/[$1] /"; }
 
 (cd "$ROOT/informations-agent" && share_llm_settings informations-agent && uv run informations-agent 2>&1 | prefix informations) &

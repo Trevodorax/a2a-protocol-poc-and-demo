@@ -1,6 +1,7 @@
 import { ToolLoopAgent, stepCountIs, type LanguageModel, type ModelMessage } from "ai";
 import { z } from "zod";
 import { RemoteTaskNotFoundError, type RemoteAgent, type RemoteTaskOutcome } from "../a2a/remoteAgent.js";
+import type { UiView } from "../a2a/uiResources.js";
 import { AppError, ConflictError, NotFoundError, ServiceUnavailableError } from "../errors.js";
 import type { Logger } from "../logger.js";
 import type { Conversation, InMemoryConversationStore, PendingConfirmation } from "./conversationStore.js";
@@ -44,11 +45,12 @@ export interface AgentReply {
   /**
    * - "answered": the agent completed the turn.
    * - "confirmation_required": answered, AND an operation is waiting for the client's decision
-   *   (see `confirmation`). The UI shows Approve/Reject buttons.
+   *   (see `confirmation`). The app shows the actions agent's confirmation view (`confirmation.ui`,
+   *   an MCP App rendered in a sandboxed iframe) with its Approve/Reject buttons.
    * - "fallback": a safe default message was returned.
    */
   status: "answered" | "confirmation_required" | "fallback";
-  confirmation?: { summary: string };
+  confirmation?: { summary: string; ui: UiView };
 }
 
 export type ConfirmationDecision = "approve" | "reject";
@@ -156,10 +158,17 @@ export class BankAgent implements ClientServiceAgent {
     // Mark the conversation as busy BEFORE the first await on the model, so a concurrent request
     // on the same conversation is rejected instead of interleaving with this one.
     conversation.busy = true;
+    const log = this.logger.child({ conversationId: conversation.id });
+    const request = "confirmation" in input ? JSON.stringify(input.confirmation) : JSON.stringify(input.message);
+    // `exchange: true` marks the conversation-flow logs (highlighted by scripts/pretty-logs.mjs).
+    log.info({ exchange: true }, `Client requested ${request} to bank agent`);
     try {
-      return "confirmation" in input
-        ? await this.runConfirmation(conversation, input.confirmation)
-        : await this.runTurn(conversation, input.message);
+      const reply =
+        "confirmation" in input
+          ? await this.runConfirmation(conversation, input.confirmation)
+          : await this.runTurn(conversation, input.message);
+      log.info({ exchange: true, status: reply.status }, `bank agent answered: ${JSON.stringify(reply.answer)}`);
+      return reply;
     } catch (error) {
       // If the very first turn failed, don't leave an empty conversation behind: the client never
       // received its id anyway.
@@ -227,6 +236,7 @@ export class BankAgent implements ClientServiceAgent {
         contextId: conversation.remoteContextIds.actions,
         text: "The confirmation expired (the actions service restarted). Nothing was changed; the client can ask again.",
         data: [],
+        uiResources: [],
       };
     }
     conversation.pendingConfirmation = undefined;
@@ -305,11 +315,12 @@ export class BankAgent implements ClientServiceAgent {
     conversation.pendingConfirmation = latestConfirmationRequest(result.steps);
 
     if (conversation.pendingConfirmation) {
+      const { summary, ui } = conversation.pendingConfirmation;
       return {
         conversationId: conversation.id,
         answer,
         status: "confirmation_required",
-        confirmation: { summary: conversation.pendingConfirmation.summary },
+        confirmation: { summary, ui },
       };
     }
     return { conversationId: conversation.id, answer, status: "answered" };
@@ -351,7 +362,9 @@ function latestConfirmationRequest(steps: ReadonlyArray<{ toolResults: ReadonlyA
     .filter((r) => r.toolName === "ask_actions_agent")
     .map((r) => r.output as ActionsToolOutput);
   const last = actionResults.at(-1);
-  return last?.status === "confirmation_required" ? { taskId: last.taskId, summary: last.summary } : undefined;
+  return last?.status === "confirmation_required"
+    ? { taskId: last.taskId, summary: last.summary, ui: last.ui }
+    : undefined;
 }
 
 /**

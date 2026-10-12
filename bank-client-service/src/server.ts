@@ -1,4 +1,5 @@
 import { A2ARemoteAgent } from "./a2a/remoteAgent.js";
+import { UI_RESOURCE_EXTENSION } from "./a2a/uiResources.js";
 import { BankAgent, createLlmAgent } from "./agent/bankAgent.js";
 import { InMemoryConversationStore } from "./agent/conversationStore.js";
 import { createLanguageModel } from "./agent/model.js";
@@ -11,8 +12,13 @@ const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL);
 
 const remote = {
-  informations: new A2ARemoteAgent("informations agent", config.INFORMATIONS_AGENT_URL),
-  actions: new A2ARemoteAgent("actions agent", config.ACTIONS_AGENT_URL),
+  informations: new A2ARemoteAgent("informations agent", config.INFORMATIONS_AGENT_URL, { logger }),
+  // Declares support for the actions agent's required UI extension: its confirmation view (MCP App),
+  // rendered by public/index.html.
+  actions: new A2ARemoteAgent("actions agent", config.ACTIONS_AGENT_URL, {
+    extensions: [UI_RESOURCE_EXTENSION],
+    logger,
+  }),
 };
 const model = createLanguageModel({ model: config.LLM_MODEL, apiKey: config.LLM_API_KEY });
 const agent = new BankAgent(

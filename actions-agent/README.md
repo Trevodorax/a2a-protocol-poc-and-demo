@@ -30,7 +30,10 @@ src/actions_agent/
 ├── prompts.py
 ├── context.py
 ├── db.py
-└── tools.py        # list_accounts, list_cards, block_card, transfer_between_own_accounts, describe_action
+├── tools.py        # list_accounts, list_cards, block_card, transfer_between_own_accounts, describe_action
+├── ui.py           # A2A: UI extension, the confirmation view as an MCP Apps file part
+└── ui/
+    └── confirmation.html  # the Approve/Reject card (MCP App view)
 ```
 
 ## A2A
@@ -53,7 +56,8 @@ caller (front agent)                           actions agent
   │ 1. SendMessage "I lost my card 4821"          │
   │ ────────────────────────────────────────────▶ │ model calls block_card → paused before it runs
   │ ◀──────────────────────────────────────────── │ task: TASK_STATE_INPUT_REQUIRED
-  │      show the summary to the client, ask      │   + summary text + confirmation_request data
+  │      show the view to the client, ask         │   + summary text + confirmation_request data
+  │                                               │   + confirmation view (MCP App)
   │ 2. SendMessage (same taskId + contextId)      │
   │    {"decision": "approve"} + optional text    │
   │ ────────────────────────────────────────────▶ │ resumed → tool runs → model answers
@@ -87,7 +91,9 @@ curl -s localhost:8002/ -H 'content-type: application/json' -H 'A2A-Version: 1.0
           "actions": [{ "name": "block_card", "args": { "card_id": "k_001" },
                         "summary": "Block the card ending in 4821. Blocking is permanent and cannot be undone." }],
           "reply_with": { "decision": ["approve", "reject"], "text": "optional client explanation" }
-      }}
+      }},
+      { "raw": "<base64 HTML>", "mediaType": "text/html;profile=mcp-app", "filename": "confirmation.html",
+        "metadata": { "uri": "ui://actions-agent/confirmation", "_meta": { "ui": { "prefersBorder": true } } } }
     ]}
   }
 }}}
@@ -95,6 +101,7 @@ curl -s localhost:8002/ -H 'content-type: application/json' -H 'A2A-Version: 1.0
 
 - The **text part** is the summary to show the client. It is built by our code from the database, not written by the model, so the client confirms exactly what will run.
 - The **data part** (an A2A `data` part: structured JSON) is for the caller's code: the pending actions and how to reply.
+- The **file part** is the confirmation card itself: an [MCP Apps](https://modelcontextprotocol.io) view (`src/actions_agent/ui/confirmation.html`) that the caller renders in a sandboxed iframe and feeds with the data part as `structuredContent`. Its Approve/Reject buttons call `tools/call` `reply_to_task { decision, comment? }` on the host, which sends the reply below. The Agent Card declares this as a **required** A2A extension (`src/actions_agent/ui.py`): callers send its URI in the `A2A-Extensions` header and must render the view.
 
 **2. The reply** uses the same `taskId` and `contextId`, the same `client_id`, a **data part** with the decision, and optionally a text part with the client's own words:
 

@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { RemoteAgent, RemoteTaskOutcome } from "../../a2a/remoteAgent.js";
+import type { UiView } from "../../a2a/uiResources.js";
 
 /**
  * Delegation tools: each one forwards a request to a remote agent over A2A (see a2a/remoteAgent.ts).
@@ -47,12 +48,15 @@ export function createInformationsAgentTool(agent: RemoteAgent) {
 /**
  * The actions agent pauses every operation for the client's confirmation (A2A `input-required`).
  *
- * When that happens, this tool returns `confirmation_required` with the remote `taskId`, and
- * bankAgent.ts stores it in the conversation. The client then answers with the app's Approve/Reject
- * buttons, and bankAgent.ts sends that decision to the paused task itself: the model never sends a
- * decision, so it can't approve an operation on the client's behalf.
+ * When that happens, this tool returns `confirmation_required` with the remote `taskId` and the
+ * actions agent's confirmation view (an MCP App, see a2a/uiResources.ts) with the
+ * `confirmation_request` data it renders. bankAgent.ts stores them in the conversation, and the app
+ * shows the view. The client answers with the view's Approve/Reject buttons, and bankAgent.ts sends
+ * that decision to the paused task itself: the model never sends a decision, so it can't approve an
+ * operation on the client's behalf.
  *
- * `toModelOutput` removes the `taskId` from what the model sees: it has no use for it.
+ * `toModelOutput` removes the `taskId` and the view from what the model sees: it has no use for them,
+ * and the view's HTML would only cost tokens.
  */
 export function createActionsAgentTool(agent: RemoteAgent) {
   return tool({
@@ -66,7 +70,14 @@ export function createActionsAgentTool(agent: RemoteAgent) {
       const outcome = await callRemote(agent, { ...context, text: request }, abortSignal);
       if (outcome.state === "completed") return { status: "done" as const, answer: outcome.text };
       if (outcome.state === "input-required") {
-        return { status: "confirmation_required" as const, taskId: outcome.taskId, summary: outcome.text };
+        const [resource] = outcome.uiResources;
+        if (!resource) throw new Error(`The ${agent.name} did not send its confirmation view.`);
+        return {
+          status: "confirmation_required" as const,
+          taskId: outcome.taskId,
+          summary: outcome.text,
+          ui: { resource, structuredContent: outcome.data[0] },
+        };
       }
       throw new Error(describeFailure(agent, outcome));
     },
@@ -86,7 +97,7 @@ export function createActionsAgentTool(agent: RemoteAgent) {
 
 export type ActionsToolOutput =
   | { status: "done"; answer: string }
-  | { status: "confirmation_required"; taskId: string; summary: string };
+  | { status: "confirmation_required"; taskId: string; summary: string; ui: UiView };
 
 /**
  * Network errors and timeouts become a short, generic tool error: the SDK sends it to the model,

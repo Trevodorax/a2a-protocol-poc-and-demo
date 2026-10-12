@@ -6,7 +6,7 @@ sequenceDiagram
     participant A as Actions Agent
 
     C->>B: Question needing a sub-agent
-    Note over B: Model calls ask_*_agent<br/>src/agent/tools/remoteAgents.ts:32 / :57
+    Note over B: Model calls ask_*_agent<br/>src/agent/tools/remoteAgents.ts:33 / :61
     Note over I,A: Shown with the Informations Agent, same cases for the Actions Agent
 
     alt Agent Card unreachable (agent down)
@@ -22,5 +22,5 @@ sequenceDiagram
         I-->>B: Task failed + generic message<br/>informations_agent/executor.py:105
     end
 
-    Note over B: Error returned to the model as a tool error,<br/>the turn does not fail<br/>src/agent/tools/remoteAgents.ts:95
+    Note over B: Error returned to the model as a tool error,<br/>the turn does not fail<br/>src/agent/tools/remoteAgents.ts:106
     B-->>C: Apology + alternatives (app, phone line)

@@ -39,10 +39,21 @@ function fakeRemote(name: string, reply: (request: RemoteAgentRequest) => Partia
     contextId: request.contextId,
     text: "",
     data: [],
+    uiResources: [],
     ...reply(request),
   }));
   return { name, send } satisfies RemoteAgent;
 }
+
+/** The actions agent pausing for confirmation, with its confirmation view (MCP App). */
+const VIEW = { uri: "ui://actions-agent/confirmation", html: "<p>VIEW_HTML</p>", meta: { prefersBorder: true } };
+const CONFIRMATION_REQUEST = { type: "confirmation_request", actions: [{ name: "block_card" }] };
+const PAUSED = {
+  state: "input-required",
+  text: "Block the card ending in 4821.",
+  data: [CONFIRMATION_REQUEST],
+  uiResources: [VIEW],
+} satisfies Partial<RemoteTaskOutcome>;
 
 type MockGenerate = NonNullable<NonNullable<ConstructorParameters<typeof MockLanguageModelV4>[0]>["doGenerate"]>;
 
@@ -50,7 +61,7 @@ function makeAgent(
   doGenerate: MockGenerate,
   remote = {
     informations: fakeRemote("informations agent", () => ({ text: "Checking: 1842.50 EUR" })),
-    actions: fakeRemote("actions agent", () => ({ state: "input-required", text: "Block the card ending in 4821." })),
+    actions: fakeRemote("actions agent", () => PAUSED),
   },
 ) {
   const model = new MockLanguageModelV4({ doGenerate });
@@ -141,25 +152,39 @@ describe("BankAgent A2A delegation", () => {
     expect(JSON.stringify(model.doGenerateCalls[1]?.prompt)).toContain("The informations agent is unavailable right now.");
   });
 
-  it("returns confirmation_required when the actions agent pauses, without showing the task id to the model", async () => {
+  it("returns confirmation_required with the actions agent's view, hiding the task id and the view from the model", async () => {
     const { agent, store, model } = makeAgent([
       toolStep("ask_actions_agent", { request: "Block card ending 4821" }),
       textStep("Please confirm with the buttons."),
     ]);
     const reply = await agent.ask({ clientId: CLIENT, message: "Bloquez ma carte 4821" });
 
-    expect(reply).toMatchObject({ status: "confirmation_required", confirmation: { summary: "Block the card ending in 4821." } });
-    expect(store.get(reply.conversationId)?.pendingConfirmation).toEqual({ taskId: "task-1", summary: "Block the card ending in 4821." });
+    const confirmation = { summary: "Block the card ending in 4821.", ui: { resource: VIEW, structuredContent: CONFIRMATION_REQUEST } };
+    expect(reply).toMatchObject({ status: "confirmation_required", confirmation });
+    expect(store.get(reply.conversationId)?.pendingConfirmation).toEqual({ taskId: "task-1", ...confirmation });
     const toolResultSentToModel = JSON.stringify(model.doGenerateCalls[1]?.prompt);
     expect(toolResultSentToModel).toContain("confirmation_required");
     expect(toolResultSentToModel).not.toContain("task-1");
+    expect(toolResultSentToModel).not.toContain("VIEW_HTML");
+  });
+
+  it("treats a pause without a confirmation view as a failure", async () => {
+    const { agent, store, model } = makeAgent(
+      [toolStep("ask_actions_agent", { request: "Block card 4821" }), textStep("Sorry, try again later.")],
+      { informations: fakeRemote("informations agent", () => ({})), actions: fakeRemote("actions agent", () => ({ ...PAUSED, uiResources: [] })) },
+    );
+    const reply = await agent.ask({ clientId: CLIENT, message: "Bloquez ma carte 4821" });
+
+    expect(reply.status).toBe("answered");
+    expect(store.get(reply.conversationId)?.pendingConfirmation).toBeUndefined();
+    expect(JSON.stringify(model.doGenerateCalls[1]?.prompt)).toContain("did not send its confirmation view");
   });
 
   it("sends the client's decision to the paused A2A task, then reports the outcome", async () => {
     const actions = fakeRemote("actions agent", (request) =>
       request.taskId
         ? { state: "completed", text: "Card 4821 is now blocked." }
-        : { state: "input-required", text: "Block the card ending in 4821." },
+        : PAUSED,
     );
     const { agent, store, model } = makeAgent(
       [toolStep("ask_actions_agent", { request: "Block card 4821" }), textStep("Please confirm."), textStep("Votre carte est bloquée.")],

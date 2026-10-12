@@ -10,11 +10,11 @@ sequenceDiagram
     rect rgba(127,127,127,0.08)
     Note over C,I: Case 1 - read data (first call also discovers the agent)
     C->>B: "Quel est mon solde ?"
-    Note over B: Model calls ask_informations_agent<br/>src/agent/tools/remoteAgents.ts:32
+    Note over B: Model calls ask_informations_agent<br/>src/agent/tools/remoteAgents.ts:33
     opt First call to this agent
         B->>I: GET /.well-known/agent-card.json
         I-->>B: Agent Card (url, JSONRPC, version 1.0, skills)
-        Note over B: Transport picked from the card, client cached<br/>src/a2a/remoteAgent.ts:120
+        Note over B: Transport picked from the card, client cached<br/>src/a2a/remoteAgent.ts:162
     end
     B->>I: SendMessage (text, metadata.client_id, contextId)
     I-->>B: Task completed + answer artifact
@@ -24,10 +24,10 @@ sequenceDiagram
     rect rgba(127,127,127,0.08)
     Note over C,A: Case 2 - operation with confirmation
     C->>B: "Block my card 4821"
-    Note over B: Model calls ask_actions_agent<br/>src/agent/tools/remoteAgents.ts:57
+    Note over B: Model calls ask_actions_agent<br/>src/agent/tools/remoteAgents.ts:61
     B->>A: SendMessage (text, client_id, contextId)
     A-->>B: Task input-required + summary
-    Note over B: taskId stored as pendingConfirmation<br/>src/agent/bankAgent.ts:305
+    Note over B: taskId stored as pendingConfirmation<br/>src/agent/bankAgent.ts:315
     B-->>C: Summary + Approve / Reject buttons
     C->>B: confirmation { decision: approve }
     B->>A: SendMessage (same taskId, data { decision })

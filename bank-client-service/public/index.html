@@ -129,28 +129,17 @@
       font-weight: 500;
     }
 
-    .confirmation {
+    /* The actions agent's confirmation view (MCP App). Height is set from its size-changed notifications. */
+    .ui-view {
       align-self: flex-start;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      max-width: min(720px, 85%);
-      padding: 12px 14px;
-      border: 1px solid var(--accent);
+      flex: none;
+      width: min(720px, 85%);
+      height: 0;
+      border: 0;
       border-radius: 14px;
-      background: var(--surface);
+      background: transparent;
     }
-    .confirmation .summary { font-weight: 600; white-space: pre-wrap; }
-    .confirmation input {
-      padding: 6px 10px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: var(--bg);
-      color: var(--text);
-      font: inherit;
-    }
-    .confirmation .actions { display: flex; gap: 8px; }
-    .confirmation .actions button { padding: 6px 14px; }
+    .ui-view.bordered { border: 1px solid var(--accent); }
   </style>
 </head>
 <body>
@@ -175,7 +164,6 @@
 
     const WELCOME = "Hello! I can answer questions about Atlas Bank and about your accounts, and I can block a card or move money between your accounts.";
     let conversationId = null;
-    let confirmationEl = null;
 
     // textContent only: answers are model-generated and must never be interpreted as HTML.
     function addMessage(text, kind) {
@@ -191,50 +179,108 @@
       input.disabled = busy;
       sendBtn.disabled = busy;
       resetBtn.disabled = busy;
-      confirmationEl?.querySelectorAll("button, input").forEach((el) => { el.disabled = busy; });
       if (!busy) input.focus();
     }
 
+    // ---- MCP App host: the confirmation view --------------------------------------------------
+    // The confirmation UI is the actions agent's own view, sent over A2A (text/html;profile=mcp-app). It runs in an iframe
+    // sandboxed WITHOUT allow-same-origin: an opaque origin, so it can't read this page, its cookies
+    // or call our API. The server already injected a CSP that blocks all network access. Everything
+    // goes through postMessage JSON-RPC, following the MCP Apps protocol:
+    //   view -> host  ui/initialize, ui/notifications/initialized, ui/notifications/size-changed,
+    //                 tools/call "reply_to_task" {decision, comment?}
+    //   host -> view  ui/notifications/tool-input, ui/notifications/tool-result, host-context-changed
+    const MCP_APPS_PROTOCOL_VERSION = "2026-01-26";
+    const darkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+    let uiView = null; // { frame, toolResult }
+
     function clearConfirmation() {
-      confirmationEl?.remove();
-      confirmationEl = null;
+      uiView?.frame.remove();
+      uiView = null;
     }
 
-    // An operation (card block, transfer) waits for the client's explicit click. The decision is sent
-    // as a structured field, never as chat text: the server forwards it to the actions agent over A2A.
-    function showConfirmation(summary) {
+    // An operation (card block, transfer) waits for the client's explicit click in the view. The
+    // decision is sent as a structured field, never as chat text: the server forwards it to the
+    // actions agent over A2A.
+    function sendDecision(decision, comment) {
+      const label = decision === "approve" ? "Approve" : "Reject";
       clearConfirmation();
-      confirmationEl = document.createElement("div");
-      confirmationEl.className = "confirmation";
+      addMessage(comment ? `${label}: ${comment}` : label, "user");
+      exchange({ conversationId, confirmation: comment ? { decision, comment } : { decision } });
+    }
 
-      const summaryEl = document.createElement("div");
-      summaryEl.className = "summary";
-      summaryEl.textContent = summary;
+    function hostContext() {
+      return { theme: darkScheme.matches ? "dark" : "light", displayMode: "inline", locale: navigator.language };
+    }
 
-      const comment = document.createElement("input");
-      comment.placeholder = "Comment (optional)";
-      comment.maxLength = 500;
-
-      const actions = document.createElement("div");
-      actions.className = "actions";
-      for (const [decision, label, cls] of [["approve", "Approve", ""], ["reject", "Reject", "secondary"]]) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.textContent = label;
-        btn.className = cls;
-        btn.addEventListener("click", () => {
-          const text = comment.value.trim();
-          clearConfirmation();
-          addMessage(text ? `${label}: ${text}` : label, "user");
-          exchange({ conversationId, confirmation: text ? { decision, comment: text } : { decision } });
-        });
-        actions.append(btn);
-      }
-
-      confirmationEl.append(summaryEl, comment, actions);
-      messagesEl.append(confirmationEl);
+    function showConfirmation({ summary, ui }) {
+      clearConfirmation();
+      const frame = document.createElement("iframe");
+      frame.className = ui.resource.meta.prefersBorder ? "ui-view bordered" : "ui-view";
+      frame.title = "Confirm the operation";
+      frame.setAttribute("sandbox", "allow-scripts");
+      frame.srcdoc = ui.resource.html;
+      uiView = {
+        frame,
+        toolResult: { content: [{ type: "text", text: summary }], structuredContent: ui.structuredContent },
+      };
+      messagesEl.append(frame);
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
+
+    function postToView(message) {
+      // The view has an opaque origin, so "*" is the only possible target; the window is ours to pick.
+      uiView?.frame.contentWindow?.postMessage({ jsonrpc: "2.0", ...message }, "*");
+    }
+
+    function handleViewRequest(method, params) {
+      switch (method) {
+        case "ui/initialize":
+          return {
+            protocolVersion: MCP_APPS_PROTOCOL_VERSION,
+            hostInfo: { name: "atlas-bank-web", version: "0.1.0" },
+            hostCapabilities: {},
+            hostContext: hostContext(),
+          };
+        case "tools/call": {
+          // The only "tool" offered to the view: answer the paused A2A task. The server validates again.
+          const { decision, comment } = params?.arguments ?? {};
+          if (params?.name !== "reply_to_task" || !["approve", "reject"].includes(decision)) {
+            throw { code: -32602, message: "Unknown tool or invalid decision" };
+          }
+          if (sendBtn.disabled) throw { code: -32000, message: "Busy" };
+          queueMicrotask(() => sendDecision(decision, typeof comment === "string" ? comment.trim().slice(0, 500) : ""));
+          return { content: [{ type: "text", text: "Decision sent." }] };
+        }
+        default:
+          throw { code: -32601, message: `Method not found: ${method}` };
+      }
+    }
+
+    window.addEventListener("message", (event) => {
+      if (!uiView || event.source !== uiView.frame.contentWindow) return;
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== "2.0" || typeof msg.method !== "string") return;
+
+      if (msg.id !== undefined) {
+        try {
+          postToView({ id: msg.id, result: handleViewRequest(msg.method, msg.params) });
+        } catch (error) {
+          postToView({ id: msg.id, error: { code: error.code ?? -32603, message: error.message ?? "Error" } });
+        }
+      } else if (msg.method === "ui/notifications/initialized") {
+        postToView({ method: "ui/notifications/tool-input", params: { arguments: {} } });
+        postToView({ method: "ui/notifications/tool-result", params: uiView.toolResult });
+      } else if (msg.method === "ui/notifications/size-changed") {
+        const height = Number(msg.params?.height);
+        if (Number.isFinite(height)) uiView.frame.style.height = `${Math.min(Math.max(height, 0), 600)}px`;
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+    });
+
+    darkScheme.addEventListener("change", () =>
+      postToView({ method: "ui/notifications/host-context-changed", params: hostContext() }),
+    );
 
     function autoGrow() {
       input.style.height = "auto";
@@ -243,7 +289,7 @@
 
     function reset() {
       conversationId = null;
-      confirmationEl = null;
+      clearConfirmation();
       messagesEl.replaceChildren();
       addMessage(WELCOME, "assistant");
       input.focus();
@@ -278,7 +324,7 @@
           conversationId = body.conversationId;
           pending.className = "msg assistant";
           pending.textContent = body.answer;
-          if (body.status === "confirmation_required") showConfirmation(body.confirmation.summary);
+          if (body.status === "confirmation_required") showConfirmation(body.confirmation);
           return;
         }
 

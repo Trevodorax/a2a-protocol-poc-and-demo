@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ModelMessage } from "ai";
+import type { UiView } from "../a2a/uiResources.js";
 
 /**
  * Conversation memory.
@@ -60,6 +61,8 @@ export interface PendingConfirmation {
   taskId: string;
   /** Built by the actions agent from its database, shown to the client as is. */
   summary: string;
+  /** The actions agent's confirmation view (MCP App), shown to the client by the app. */
+  ui: UiView;
 }
 
 export interface ConversationStoreOptions {

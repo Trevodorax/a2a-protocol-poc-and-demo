@@ -19,7 +19,7 @@ Task states we handle:
 | State | Meaning | What we do |
 |---|---|---|
 | `completed` | Done; result in the artifacts | Return the answer to the model |
-| `input-required` | **Paused**: the agent needs more input on the same task | Actions agent only: show Approve/Reject to the client |
+| `input-required` | **Paused**: the agent needs more input on the same task | Actions agent only: show its confirmation view (Approve/Reject) to the client |
 | `rejected` | Refused before any work (e.g. missing `client_id`) | Tool error to the model |
 | `failed` | Error during the work (LLM down, timeout) | Tool error to the model |
 | `canceled` | Canceled with `CancelTask` | Tool error to the model (not used by us) |
@@ -41,7 +41,8 @@ agent/tools/remoteAgents.ts   the two delegation tools (ask_informations_agent, 
 agent/bankAgent.ts            call options (client id, context ids), pending confirmation, confirmation path
 agent/conversationStore.ts    per-conversation A2A state: remoteContextIds, pendingConfirmation
 routes/chat.routes.ts         the `confirmation` request body
-public/index.html             the Approve/Reject card
+a2a/uiResources.ts            the actions agent's confirmation view (MCP App): extraction, CSP
+public/index.html             MCP App host: renders the view in a sandboxed iframe
 ```
 
 ## 4. Asking for information
@@ -92,14 +93,17 @@ The actions agent pauses every write (card block, transfer) in **`input-required
      │ "block my card 4821"     │                                               │
      │ ───────────────────────▶ │ model → ask_actions_agent("Block card 4821")  │
      │                          │ ── SendMessage {text, client_id, contextId} ─▶│ model calls block_card
-     │                          │                                               │ → paused before it runs
+     │                          │    + header A2A-Extensions: UI extension      │ → paused before it runs
      │                          │ ◀── Task input-required ───────────────────── │
      │                          │      status.message: text summary + data      │
+     │                          │      + file: confirmation view (MCP App)      │
      │                          │ tool output: confirmation_required            │
-     │                          │   (taskId kept in code, hidden from the model)│
+     │                          │   (taskId and view kept in code, hidden from  │
+     │                          │    the model)                                 │
      │                          │ conversation.pendingConfirmation = {taskId,   │
-     │                          │                                     summary}  │
-     │ ◀─ status: "confirmation_required", confirmation.summary, answer         │
+     │                          │                                summary, ui}  │
+     │ ◀─ status: "confirmation_required", confirmation.{summary, ui}, answer   │
+     │ view in sandboxed iframe │                                               │
      │ [Approve] [Reject]       │                                               │
      │                          │                                               │
      │ click Approve ─────────▶ │ POST { conversationId,                        │
@@ -111,6 +115,17 @@ The actions agent pauses every write (card block, transfer) in **`input-required
      │                          │   Actions agent result (completed): …"        │
      │ ◀─ "Votre carte est bloquée."                                            │
 ```
+
+### The confirmation view (MCP App over A2A)
+
+The Approve/Reject card is not part of this app: it is the actions agent's own view, sent with every confirmation request, in the format MCP Apps (and ChatGPT apps) use for tool UIs. The actions agent's Agent Card declares it as a **required A2A extension** (`https://atlas-bank.example/a2a/extensions/mcp-app-ui/v1`); we declare support for it in the `A2A-Extensions` header (`src/server.ts`).
+
+- **On the wire**: a file part in the `input-required` status message: the HTML in `raw` (base64), `mediaType: "text/html;profile=mcp-app"`, `metadata: { "uri": "ui://actions-agent/confirmation", "_meta": { "ui": { "prefersBorder": true } } }`. The message's `data` part (`confirmation_request`) is what the view renders, as the MCP tool result's `structuredContent`.
+- **Server** (`src/a2a/uiResources.ts`): extracts the view and puts a CSP in front of it that blocks all network access. The view goes to the browser in `confirmation.ui`, never to the model (`toModelOutput`). A pause without a view is a tool error.
+- **Browser** (`public/index.html`): renders it in an `<iframe sandbox="allow-scripts">` (opaque origin: no access to the page, its cookies or our API) and talks to it with the MCP Apps postMessage JSON-RPC protocol: `ui/initialize` → `ui/notifications/initialized` → `tool-input` / `tool-result { structuredContent }`, plus `size-changed` and `host-context-changed` (theme).
+- **Decision**: the view calls `tools/call` `reply_to_task { decision, comment? }`. The page turns it into the same `confirmation` request as before, so the consent rules below are unchanged: the decision is a structured field from the client's click, never chat text or model output.
+
+See `docs/diagrams/a2a-confirmation-ui.mmd`.
 
 The reply that resumes the paused task:
 

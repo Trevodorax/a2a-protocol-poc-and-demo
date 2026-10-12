@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { Role, TaskState, type Message, type Part, type Task } from "@a2a-js/sdk";
-import { ClientFactory, type Client } from "@a2a-js/sdk/client";
+import { ClientFactory, ServiceParameters, withA2AExtensions, type Client } from "@a2a-js/sdk/client";
 import { TaskNotFoundError } from "@a2a-js/sdk/errors";
+import type { Logger } from "../logger.js";
+import { uiResourcesOf, type UiResource } from "./uiResources.js";
 
 /**
  * A2A client for ONE remote agent (the informations agent or the actions agent).
@@ -24,8 +26,13 @@ import { TaskNotFoundError } from "@a2a-js/sdk/errors";
  * - Blocking calls: the default client config waits until the task reaches a terminal or an
  *   interrupted state, so `sendMessage()` resolves with the final Task. No streaming and no push
  *   notifications: our agents answer in seconds and their cards don't advertise either.
- * - Normalization: the Task is turned into a small `RemoteTaskOutcome` (state + text + data), so
- *   the rest of the code doesn't depend on A2A's protobuf-shaped types.
+ * - Extensions: the URIs given to the constructor are sent in the `A2A-Extensions` header of every
+ *   request, to opt in to optional features advertised in the Agent Card (here, the actions agent's
+ *   MCP Apps views, see uiResources.ts).
+ * - Logging: every request and every answer is logged ("bank agent requested ... to X" / "X answered ..."),
+ *   with the A2A context and task ids, to follow a conversation across agents.
+ * - Normalization: the Task is turned into a small `RemoteTaskOutcome` (state + text + data + UI
+ *   views), so the rest of the code doesn't depend on A2A's protobuf-shaped types.
  *
  * CONTRACT WITH OUR PYTHON AGENTS (see their READMEs)
  * - `metadata.client_id` on every message: whose data the remote agent may read or change. It comes
@@ -49,6 +56,8 @@ export interface RemoteTaskOutcome {
   text: string;
   /** JSON `data` parts of the status message (e.g. the actions agent's `confirmation_request`). */
   data: unknown[];
+  /** MCP App views attached to the status message (only with the UI extension). */
+  uiResources: UiResource[];
 }
 
 export interface RemoteAgentRequest {
@@ -76,18 +85,46 @@ export interface RemoteAgent {
   send(request: RemoteAgentRequest, signal?: AbortSignal): Promise<RemoteTaskOutcome>;
 }
 
+export interface A2ARemoteAgentOptions {
+  /** A2A extension URIs to request, sent in the `A2A-Extensions` header. */
+  extensions?: string[];
+  /** Per-call cap. A remote agent runs its own LLM loop (up to 90 s on our Python agents). */
+  timeoutMs?: number;
+  factory?: ClientFactory;
+  logger?: Logger;
+}
+
 export class A2ARemoteAgent implements RemoteAgent {
   private client: Promise<Client> | undefined;
+  private readonly extensions: string[];
+  private readonly timeoutMs: number;
+  private readonly factory: ClientFactory;
+  private readonly logger: Logger | undefined;
 
   constructor(
     readonly name: string,
     private readonly baseUrl: string,
-    /** Per-call cap. A remote agent runs its own LLM loop (up to 90 s on our Python agents). */
-    private readonly timeoutMs = 100_000,
-    private readonly factory = new ClientFactory(),
-  ) {}
+    { extensions = [], timeoutMs = 100_000, factory = new ClientFactory(), logger }: A2ARemoteAgentOptions = {},
+  ) {
+    this.extensions = extensions;
+    this.timeoutMs = timeoutMs;
+    this.factory = factory;
+    this.logger = logger;
+  }
 
   async send(request: RemoteAgentRequest, signal?: AbortSignal): Promise<RemoteTaskOutcome> {
+    // `exchange: true` marks the conversation-flow logs (highlighted by scripts/pretty-logs.mjs).
+    const ids = { exchange: true, contextId: request.contextId, taskId: request.taskId };
+    this.logger?.info(ids, `bank agent requested ${describeRequest(request)} to ${this.name}`);
+    const outcome = await this.call(request, signal);
+    this.logger?.info(
+      { ...ids, taskId: outcome.taskId, state: outcome.state },
+      `${this.name} answered${outcome.state === "completed" ? "" : ` (${outcome.state})`}: ${JSON.stringify(outcome.text)}`,
+    );
+    return outcome;
+  }
+
+  private async call(request: RemoteAgentRequest, signal: AbortSignal | undefined): Promise<RemoteTaskOutcome> {
     const client = await this.getClient();
     const timeout = AbortSignal.timeout(this.timeoutMs);
 
@@ -101,7 +138,12 @@ export class A2ARemoteAgent implements RemoteAgent {
           configuration: undefined,
           metadata: undefined,
         },
-        { signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
+        {
+          signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+          ...(this.extensions.length && {
+            serviceParameters: ServiceParameters.create(withA2AExtensions(...this.extensions)),
+          }),
+        },
       );
     } catch (error) {
       if (error instanceof TaskNotFoundError) throw new RemoteTaskNotFoundError(this.name);
@@ -111,7 +153,7 @@ export class A2ARemoteAgent implements RemoteAgent {
     // A2A allows an agent to answer with a bare Message instead of a Task (for trivial,
     // stateless replies). Our agents always create a Task, but we accept both.
     if (!("status" in result)) {
-      return { state: "completed", taskId: "", contextId: result.contextId, text: textOf(result.parts), data: [] };
+      return { state: "completed", taskId: "", contextId: result.contextId, text: textOf(result.parts), data: [], uiResources: [] };
     }
     return toOutcome(result);
   }
@@ -123,6 +165,11 @@ export class A2ARemoteAgent implements RemoteAgent {
     });
     return this.client;
   }
+}
+
+/** `"text"`, `{"decision":"approve"}`, or both joined with "+". */
+function describeRequest({ text, data }: RemoteAgentRequest): string {
+  return [data && JSON.stringify(data), text && JSON.stringify(text)].filter(Boolean).join(" + ");
 }
 
 function toMessage({ clientId, contextId, taskId, text, data }: RemoteAgentRequest): Message {
@@ -155,6 +202,7 @@ function toOutcome(task: Task): RemoteTaskOutcome {
     contextId: task.contextId,
     text: state === "completed" ? artifactText : textOf(statusParts),
     data: statusParts.flatMap((p) => (p.content?.$case === "data" ? [p.content.value] : [])),
+    uiResources: uiResourcesOf(statusParts),
   };
 }
 

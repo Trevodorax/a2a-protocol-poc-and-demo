@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Confirm operation</title>
+  <!--
+    MCP App view (text/html;profile=mcp-app) for the actions agent's confirmation request.
+    It talks to its host only through postMessage JSON-RPC (MCP Apps protocol):
+      view -> host  ui/initialize, ui/notifications/initialized, ui/notifications/size-changed,
+                    tools/call "reply_to_task" {decision, comment?}
+      host -> view  ui/notifications/tool-result {structuredContent: confirmation_request},
+                    ui/notifications/host-context-changed {theme}
+    It has no network access: the host relays the decision to this agent over A2A.
+  -->
+  <style>
+    :root {
+      --surface: #ffffff; --text: #1b1f24; --muted: #69707a; --border: #e1e4e8;
+      --accent: #1f5fbf; --accent-text: #ffffff; --input: #f6f7f9; --warn: #b54708;
+    }
+    :root[data-theme="dark"] {
+      --surface: #1a1e23; --text: #e6e8eb; --muted: #9aa1ab; --border: #2c3138;
+      --accent: #4d8ff0; --accent-text: #0b0d10; --input: #111418; --warn: #fdb022;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--surface); color: var(--text); }
+    body { font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
+    .label { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+    ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+    li { display: flex; gap: 10px; align-items: baseline; font-weight: 600; }
+    li .icon { flex: none; width: 1.2em; text-align: center; }
+    .note { color: var(--warn); font-size: 13px; }
+    input {
+      padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+      background: var(--input); color: var(--text); font: inherit;
+    }
+    .actions { display: flex; gap: 8px; }
+    button {
+      padding: 6px 14px; border: 1px solid transparent; border-radius: 10px;
+      background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600; cursor: pointer;
+    }
+    button.secondary { background: transparent; color: var(--text); border-color: var(--border); font-weight: 500; }
+    button:disabled, input:disabled { opacity: .5; cursor: default; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="label">Confirmation required</div>
+    <ul id="actions"><li>Loading…</li></ul>
+    <div class="note" id="note" hidden>Blocking a card is permanent.</div>
+    <input id="comment" placeholder="Comment (optional)" maxlength="500" />
+    <div class="actions">
+      <button type="button" data-decision="approve">Approve</button>
+      <button type="button" class="secondary" data-decision="reject">Reject</button>
+    </div>
+  </main>
+
+  <script>
+    const PROTOCOL_VERSION = "2026-01-26";
+    const ICONS = { block_card: "🔒", transfer_between_own_accounts: "⇄" };
+    const controls = document.querySelectorAll("button, input");
+    controls.forEach((el) => { el.disabled = true; });
+
+    // Minimal MCP Apps bridge: JSON-RPC 2.0 over postMessage with the parent window (the host).
+    let nextId = 1;
+    const inFlight = new Map();
+    function request(method, params) {
+      const id = nextId++;
+      window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+      return new Promise((resolve, reject) => inFlight.set(id, { resolve, reject }));
+    }
+    function notify(method, params) {
+      window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+    }
+
+    window.addEventListener("message", (event) => {
+      if (event.source !== window.parent) return;
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== "2.0") return;
+      if (msg.id !== undefined && inFlight.has(msg.id)) {
+        const { resolve, reject } = inFlight.get(msg.id);
+        inFlight.delete(msg.id);
+        msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result);
+      } else if (msg.method === "ui/notifications/tool-result") {
+        render(msg.params?.structuredContent);
+      } else if (msg.method === "ui/notifications/host-context-changed") {
+        applyHostContext(msg.params);
+      }
+    });
+
+    function applyHostContext(context) {
+      if (context?.theme) document.documentElement.dataset.theme = context.theme;
+    }
+
+    // `structuredContent` is the actions agent's `confirmation_request` data part. Summaries are
+    // built by the agent from its database: shown as text, never as HTML.
+    function render(content) {
+      const actions = Array.isArray(content?.actions) ? content.actions : [];
+      const list = document.getElementById("actions");
+      list.replaceChildren(...actions.map((action) => {
+        const li = document.createElement("li");
+        const icon = document.createElement("span");
+        icon.className = "icon";
+        icon.textContent = ICONS[action.name] ?? "•";
+        const text = document.createElement("span");
+        text.textContent = action.summary;
+        li.append(icon, text);
+        return li;
+      }));
+      document.getElementById("note").hidden = !actions.some((a) => a.name === "block_card");
+      controls.forEach((el) => { el.disabled = actions.length === 0; });
+    }
+
+    for (const button of document.querySelectorAll("button[data-decision]")) {
+      button.addEventListener("click", async () => {
+        const comment = document.getElementById("comment").value.trim();
+        controls.forEach((el) => { el.disabled = true; });
+        try {
+          await request("tools/call", {
+            name: "reply_to_task",
+            arguments: comment ? { decision: button.dataset.decision, comment } : { decision: button.dataset.decision },
+          });
+        } catch {
+          controls.forEach((el) => { el.disabled = false; });
+        }
+      });
+    }
+
+    new ResizeObserver(() => {
+      const { scrollWidth: width, scrollHeight: height } = document.documentElement;
+      notify("ui/notifications/size-changed", { width, height });
+    }).observe(document.body);
+
+    request("ui/initialize", {
+      protocolVersion: PROTOCOL_VERSION,
+      appInfo: { name: "atlas-actions-confirmation", version: "0.1.0" },
+      appCapabilities: {},
+    }).then((result) => {
+      applyHostContext(result?.hostContext);
+      notify("ui/notifications/initialized", {});
+    });
+  </script>
+</body>
+</html>

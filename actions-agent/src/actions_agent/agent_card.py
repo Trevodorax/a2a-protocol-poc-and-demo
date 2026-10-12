@@ -10,7 +10,10 @@ The Agent Card is the agent's public "business card" in the A2A protocol. It is 
 - what it supports (`capabilities`): no streaming, no push notifications. A confirmation round trip
   is handled with the `input-required` task state over plain request/response calls;
 - which content types it accepts and returns: text, plus `application/json` for the structured
-  confirmation request and the caller's decision (A2A data parts);
+  confirmation request and the caller's decision (A2A data parts), plus `text/html;profile=mcp-app`
+  for the confirmation view;
+- which extensions it uses (`capabilities.extensions`): the UI extension (ui.py), marked `required`:
+  every confirmation request carries an MCP Apps view, and callers must be able to render it.
 - what it can do (`skills`): descriptions with examples, meant for the calling agent to decide when
   to delegate here. They are documentation, not routing: the agent receives a plain message.
 
@@ -21,8 +24,10 @@ The card advertises no `security_schemes` yet: there is no authentication betwee
 (TODO(auth)), which is why the server only listens on localhost by default.
 """
 
-from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
+from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentSkill
 from a2a.utils.constants import PROTOCOL_VERSION_1_0, TransportProtocol
+
+from actions_agent.ui import MCP_APP_MIME_TYPE, UI_EXTENSION_URI
 
 
 def build_agent_card(public_url: str) -> AgentCard:
@@ -31,7 +36,8 @@ def build_agent_card(public_url: str) -> AgentCard:
         description=(
             "Performs operations for one bank client: block a card, transfer between the client's own accounts. "
             "The client is identified by `client_id` in the message metadata, set by the calling agent. "
-            "Every operation pauses the task in `input-required` with a summary to show the client; reply on the "
+            "Every operation pauses the task in `input-required` with a summary and a confirmation view (MCP App, see the "
+            "UI extension) to show the client; reply on the "
             'same task with a data part {"decision": "approve" | "reject"} and an optional text explanation.'
         ),
         version="0.1.0",
@@ -42,9 +48,25 @@ def build_agent_card(public_url: str) -> AgentCard:
                 protocol_version=PROTOCOL_VERSION_1_0,
             )
         ],
-        capabilities=AgentCapabilities(streaming=False, push_notifications=False),
+        capabilities=AgentCapabilities(
+            streaming=False,
+            push_notifications=False,
+            extensions=[
+                AgentExtension(
+                    uri=UI_EXTENSION_URI,
+                    description=(
+                        "MCP Apps views over A2A (required). Every input-required status message also "
+                        f"carries a `{MCP_APP_MIME_TYPE}` file part (`metadata.uri` = ui://..., `metadata._meta.ui`) "
+                        "to render in a sandboxed iframe, fed with the message's data part as `structuredContent`. "
+                        "The view replies with `tools/call` `reply_to_task` {decision, comment?}, which the host "
+                        "sends back on the same task as a data part {decision} and a text part."
+                    ),
+                    required=True,
+                )
+            ],
+        ),
         default_input_modes=["text/plain", "application/json"],
-        default_output_modes=["text/plain", "application/json"],
+        default_output_modes=["text/plain", "application/json", MCP_APP_MIME_TYPE],
         skills=[
             AgentSkill(
                 id="block_card",

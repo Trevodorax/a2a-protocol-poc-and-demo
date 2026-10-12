@@ -1,5 +1,8 @@
+import base64
+
 from langchain_core.messages import AIMessage, ToolMessage
 
+from actions_agent.ui import CONFIRMATION_URI, MCP_APP_MIME_TYPE, UI_EXTENSION_URI
 from tests.conftest import fake_model, post, send_message, tool_call
 
 
@@ -21,7 +24,7 @@ async def test_block_card_waits_for_approval_then_runs(make_client, conn):
         task = await post(client, send_message("I lost my card ending in 4821"))
 
         assert task["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
-        text_part, data_part = task["status"]["message"]["parts"]
+        text_part, data_part, _ui_part = task["status"]["message"]["parts"]
         assert "ending in 4821" in text_part["text"]
         assert data_part["data"]["actions"][0]["name"] == "block_card"
         assert card_status(conn, "k_001") == "active"
@@ -31,6 +34,24 @@ async def test_block_card_waits_for_approval_then_runs(make_client, conn):
     assert task["status"]["state"] == "TASK_STATE_COMPLETED"
     assert task["artifacts"][0]["parts"][0]["text"] == "Card 4821 is blocked."
     assert card_status(conn, "k_001") == "blocked"
+
+
+async def test_confirmation_request_carries_an_mcp_app_view(make_client):
+    model = fake_model(tool_call("block_card", {"card_id": "k_001"}))
+    async with make_client(model) as client:
+        card = (await client.get("/.well-known/agent-card.json")).json()
+        task = await post(client, send_message("I lost my card ending in 4821"))
+
+    assert card["capabilities"]["extensions"][0] == {
+        "uri": UI_EXTENSION_URI,
+        "description": card["capabilities"]["extensions"][0]["description"],
+        "required": True,
+    }
+    _text, data_part, ui_part = task["status"]["message"]["parts"]
+    assert data_part["data"]["type"] == "confirmation_request"
+    assert ui_part["mediaType"] == MCP_APP_MIME_TYPE
+    assert ui_part["metadata"]["uri"] == CONFIRMATION_URI
+    assert b"ui/initialize" in base64.b64decode(ui_part["raw"])
 
 
 async def test_transfer_approved_moves_money_and_records_transactions(make_client, conn):
